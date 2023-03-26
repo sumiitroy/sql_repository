@@ -1,0 +1,126 @@
+/* 
+Table Name - dbo.Superstore
+Columns we have 
+ROW_ID - Primary Key
+Order_ID, Order_Date, Ship_Date, Ship_Mode, Customer_ID, Customer_Name, Segment, Country_Region, City, State_Province,
+Postal_Code, Region, Product_ID, Category, Sub_Category, Product_Name, Sales, Quantity, Discount, Profit
+*/
+
+-- Names of the Customer who has ordered a product every year
+
+with cte as
+            (
+                SELECT customer_name, YEAR(order_date) as order_year, 
+                COUNT(*) OVER (partition by customer_name, year(Order_Date)) as orders_per_year
+                FROM dbo.Superstore
+                GROUP BY customer_name, year(Order_Date)
+            )
+SELECT Customer_Name FROM cte
+GROUP BY Customer_Name
+HAVING COUNT(DISTINCT order_year) = (SELECT COUNT(DISTINCT(order_year)) FROM cte)
+AND MIN(orders_per_year) > 0
+
+-- Compare Previous Order Price with the Next Order Price and return order_ratio_value for each customer
+
+with cte AS
+            (
+              SELECT    customer_name,
+                        LAG(Sales, 1) OVER (PARTITION BY customer_name ORDER BY order_date) as previous_order_price,
+                        LEAD(Sales, 1) OVER (PARTITION BY customer_name ORDER BY order_date) as next_order_price
+                    FROM dbo.Superstore
+            )
+SELECT Customer_Name, ROUND(AVG((next_order_price - previous_order_price)*100/next_order_price),2) as order_value_ratio FROM cte
+WHERE previous_order_price is not null
+AND next_order_price is not null
+GROUP BY Customer_Name
+ORDER BY 2 desc
+
+
+-- Compare difference between previous order date to track customer level average repeat order days
+
+with cte AS
+            (
+              SELECT    customer_name,
+                        LAG(Order_Date, 1) OVER (PARTITION BY customer_name ORDER BY order_date) as previous_order_date,
+                        LEAD(Order_Date, 1) OVER (PARTITION BY customer_name ORDER BY order_date) as next_order_date
+                    FROM dbo.Superstore
+            )
+SELECT Customer_Name, AVG(DATEDIFF(DAY, previous_order_date, next_order_date)) as order_date_diff 
+FROM cte
+WHERE previous_order_date is not null
+AND next_order_date is not null
+GROUP BY Customer_Name
+ORDER BY 2
+
+-- Deep Dive the difference between Order Date and Shipped Date and Aggregating the Metric to each ship mode
+
+SELECT ship_mode, 
+       AVG(DATEDIFF(DAY, order_date, ship_date)) as avg_ship_to_order_date
+FROM dbo.Superstore
+GROUP BY Ship_Mode
+ORDER BY 2 desc
+
+-- Customer Segmentation for ordering habits, customers who have placed maximum orders, medium orders, minimum orders
+
+
+SELECT Customer_Name, 
+       ROUND(SUM(sales),2) as order_total,
+       NTILE(3) OVER(order by sum(sales) desc) as bucket
+FROM dbo.Superstore
+GROUP BY Customer_Name
+
+-- Compute total profit & loss for each region with Net Profit/Loss
+
+SELECT  Region,
+        ROUND(SUM(CASE WHEN profit >= 0 then Profit END),2) AS profit_amt,
+        ABS(ROUND(SUM(CASE WHEN profit < 0 then Profit END),2)) AS loss_amt,
+        ROUND(SUM(Profit),2) as net_amt 
+FROM dbo.Superstore
+GROUP BY Region
+
+-- Computing Top 3 Products under each Category and Sub-Category by total sales
+
+with cte AS
+(
+SELECT  Category,
+        Sub_Category,
+        Product_name,
+        SUM(Sales) as total_sales
+FROM dbo.Superstore
+GROUP BY Category, Sub_Category, Product_Name
+)
+SELECT Category,
+       Sub_Category,
+       Product_Name,
+       rn
+    FROM (SELECT category, 
+                sub_category,
+                Product_Name,
+                ROW_NUMBER()OVER(PARTITION BY category, sub_category order by total_sales desc) as rn
+        FROM cte
+    ) as cte2
+WHERE rn <= 3
+
+-- Customers who have obtained highest discount rate w.r.t Sales
+
+SELECT customer_name,
+       ROUND(sum(Discount)*100.0/SUM(sales),2) as discount_ratio
+FROM dbo.Superstore
+GROUP BY Customer_Name
+ORDER BY 2 DESC
+
+-- Segment Level Highest Loss
+
+SELECT Segment,
+       ABS(ROUND(SUM(CASE WHEN Profit < 0 THEN Profit END),2)) as total_loss
+    FROM dbo.Superstore
+    GROUP BY Segment
+    ORDER BY 2 DESC
+
+-- Running SUM of Sales that resets each month
+
+SELECT ORDER_DATE,
+       ROUND(SUM(Sales) OVER (PARTITION BY MONTH(order_date),YEAR(ORDER_DATE) ORDER BY Order_Date),2) AS RUNNING_SUM
+    FROM dbo.Superstore
+    GROUP BY Order_Date, Sales, MONTH(Order_Date), YEAR(Order_Date) 
+    ORDER BY 1
